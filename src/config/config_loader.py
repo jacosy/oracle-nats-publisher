@@ -6,7 +6,7 @@ Handles loading configuration from files and environment variables
 import os
 import yaml
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ class ConfigLoader:
     """Load and merge configuration from multiple sources"""
     
     @staticmethod
-    def load_config(config_path: str = None) -> Dict[str, Any]:
+    def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
         """
         Load configuration with priority: ENV > config.yaml
         

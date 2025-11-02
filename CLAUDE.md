@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Oracle NATS Publisher V7 - A synchronous Python application that polls Oracle database for transaction log events and publishes them to NATS JetStream, with ETL tracking in MariaDB.
+Oracle NATS Publisher V7 - A Python application that polls Oracle database for transaction log events and publishes them to NATS JetStream using **async/await** for high-throughput batch publishing, with ETL tracking in MariaDB.
 
 ## Development Commands
 
@@ -45,41 +45,44 @@ db_clients/ (Layer 1: Pure CRUD)
 ```
 
 ### Layer 1: db_clients/ - Pure CRUD Operations
-- `oracle_db_client.py` - Oracle connection and generic query execution
-- `mariadb_db_client.py` - MariaDB connection and generic query execution
-- `nats_client.py` - NATS JetStream connection, publish, batch operations
+- `oracle_db_client.py` - Oracle connection and generic query execution (synchronous)
+- `mariadb_db_client.py` - MariaDB connection and generic query execution (synchronous)
+- `nats_client.py` - NATS JetStream connection, publish, **async batch operations**
 
-These clients contain **no business logic**, only connection management and basic CRUD operations.
+These clients contain **no business logic**, only connection management and basic CRUD operations. The NATS client uses async/await for high-throughput batch publishing.
 
 ### Layer 2: repositories/ - Data Access Patterns
-- `oracle_repository.py` - Business-specific queries for Oracle (e.g., `get_txlog_events_since()`)
-- `mariadb_repository.py` - ETL tracking queries (e.g., `get_last_successful_time()`, `update_successful_run()`)
+- `oracle_repository.py` - Business-specific queries for Oracle (synchronous, e.g., `get_txlog_events_since()`)
+- `mariadb_repository.py` - ETL tracking queries (synchronous, e.g., `get_last_successful_time()`, `update_successful_run()`)
 
-Repositories encapsulate SQL queries and data access patterns. They use db_clients for execution.
+Repositories encapsulate SQL queries and data access patterns. They use db_clients for execution. Database queries remain synchronous.
 
 ### Layer 3: services/ - Business Logic
-- `polling_service.py` - Orchestrates the polling workflow: fetch → publish → track
+- `polling_service.py` - Orchestrates the polling workflow: fetch → publish → track (**async**)
 
-Services coordinate between repositories and publishers to implement business processes.
+Services coordinate between repositories and publishers. The `poll_and_publish()` method is async to support high-throughput publishing.
 
 ### Publishers (Business Logic for External Integrations)
-- `txlog_event_publisher.py` - Formats Oracle records into TxLog events and publishes to NATS
+- `txlog_event_publisher.py` - Formats Oracle records into TxLog events and publishes to NATS (**async**)
 
-Publishers are business logic layer components that handle external integrations. They use NatsClient for low-level operations.
+Publishers are business logic layer components that handle external integrations. They use NatsClient for async batch operations.
 
 ### Key Flow: Poll and Publish
-The main workflow in `PollingService.poll_and_publish()`:
-1. Get last successful time from MariaDB tracking (via `mariadb_repository`)
-2. Fetch new events from Oracle since that time (via `oracle_repository`)
-3. Format and publish events to NATS (via `txlog_event_publisher`)
-4. Update MariaDB tracking on success (via `mariadb_repository`)
+The main workflow in `PollingService.poll_and_publish()` (async):
+1. Get last successful time from MariaDB tracking (synchronous, via `mariadb_repository`)
+2. Fetch new events from Oracle since that time (synchronous, via `oracle_repository`)
+3. Format and **async batch publish** events to NATS (via `txlog_event_publisher`)
+4. Update MariaDB tracking on success (synchronous, via `mariadb_repository`)
+
+The async nature is **only for NATS publishing** to achieve high throughput. Database operations remain synchronous.
 
 ### Important Architectural Rules
-- **Synchronous only** - No async/await anywhere in the codebase
+- **Hybrid sync/async** - Database operations are synchronous, NATS publishing is async for performance
 - **Layer separation** - Each layer only calls the layer below it
 - **No business logic in db_clients** - Keep them pure CRUD
-- **Publishers use db_clients** - TxLogEventPublisher uses NatsClient for CRUD operations
-- **main.py is pure orchestration** - No business logic, just wiring components together
+- **Publishers use db_clients** - TxLogEventPublisher uses NatsClient for async batch operations
+- **main.py is pure orchestration** - No business logic, just wiring components and running the async event loop
+- **Async propagation** - Methods that call async operations must be async (poll_and_publish, process_one_cycle, run)
 
 ## Data Models
 
@@ -94,7 +97,16 @@ The main workflow in `PollingService.poll_and_publish()`:
 - Stream: Configured in `config.yaml` under `intime_txlog_events.stream_name`
 - Subject: Configured in `config.yaml` under `intime_txlog_events.subject`
 - Events include `trace_id` (UUID) and `data_type` fields added by TxLogEventPublisher
-- Batch publishing with retry mechanism (configurable via `publisher.batch_size` and `publisher.max_retries`)
+- **TRUE Async Batch Publishing**: `NatsClient.publish_batch()` handles:
+  - Pre-serialization of all messages to catch format errors early
+  - **Concurrent async publishing** using `asyncio.gather()` for maximum throughput
+  - Messages in each batch are published **simultaneously** (not one-by-one)
+  - Processing messages in configurable batches (via `publisher.batch_size`)
+  - Automatic retry with exponential backoff (via `publisher.max_retries`)
+  - Individual message retry (not transactional - messages succeed/fail independently)
+  - Detailed progress tracking and error reporting
+
+**Performance**: The async batch implementation publishes multiple messages concurrently within each batch, providing significantly higher throughput compared to sequential publishing.
 
 ## Configuration Structure
 
