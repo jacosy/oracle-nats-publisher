@@ -1,0 +1,45 @@
+# Oracle Database Configuration
+oracle_db:
+  host: "localhost"
+  port: 1521
+  service_name: "ORCL"
+  username: "your_username"
+  password: "your_password"
+
+# MariaDB Configuration
+mariadb:
+  host: "localhost"
+  port: 3306
+  database: "etl_tracking"
+  username: "your_username"
+  password: "your_password"
+
+# NATS Connection Configuration
+nats:
+  servers:
+    - "nats://localhost:4222"
+  # Optional authentication
+  # username: "nats_user"
+  # password: "nats_password"
+  max_reconnect_attempts: 60
+  reconnect_time_wait: 2
+
+# IntimeTxLog Events Publishing Configuration
+intime_txlog_events:
+  stream_name: "TXLOG_STREAM"
+  subject: "txlog.events"
+  add_trace_id: true
+  data_type: "TXLOG"
+
+# Publisher Configuration
+publisher:
+  program_name: "M_INTIMECASEAGENT"
+  poll_interval: 60  # seconds
+  batch_size: 100
+  max_records_per_run: 10000
+  max_retries: 3  # Maximum retry attempts for failed messages
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
