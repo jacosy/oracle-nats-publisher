@@ -1,0 +1,188 @@
+# Kubernetes Deployment for Oracle NATS Publisher
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oracle-nats-publisher
+  namespace: oracle-nats-publisher
+  labels:
+    app: oracle-nats-publisher
+    version: v7.0
+spec:
+  replicas: 1  # Single instance to avoid duplicate polling
+  strategy:
+    type: Recreate  # Ensure only one instance runs at a time
+  selector:
+    matchLabels:
+      app: oracle-nats-publisher
+  template:
+    metadata:
+      labels:
+        app: oracle-nats-publisher
+        version: v7.0
+      annotations:
+        # Prometheus annotations (if using Prometheus)
+        prometheus.io/scrape: "false"  # No metrics endpoint yet
+    spec:
+      # Security context
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      # Service account (for Vault integration)
+      serviceAccountName: oracle-nats-publisher-sa
+
+      # Image pull secrets (if using private registry)
+      # imagePullSecrets:
+      #   - name: registry-credentials
+
+      containers:
+      - name: publisher
+        image: oracle-nats-publisher:v7.0  # Update with your registry
+        imagePullPolicy: IfNotPresent
+
+        # Security context for container
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+              - ALL
+
+        # Resource limits and requests
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+        # Environment variables from ConfigMap
+        envFrom:
+          - configMapRef:
+              name: oracle-nats-config
+
+        # Environment variables from Secret
+        env:
+          # Oracle credentials from Secret
+          - name: ORACLE_USER
+            valueFrom:
+              secretKeyRef:
+                name: oracle-nats-secrets
+                key: oracle-username
+          - name: ORACLE_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: oracle-nats-secrets
+                key: oracle-password
+          - name: ORACLE_DSN
+            valueFrom:
+              secretKeyRef:
+                name: oracle-nats-secrets
+                key: oracle-dsn
+
+          # MariaDB credentials from Secret
+          - name: MARIADB_USER
+            valueFrom:
+              secretKeyRef:
+                name: oracle-nats-secrets
+                key: mariadb-username
+          - name: MARIADB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: oracle-nats-secrets
+                key: mariadb-password
+
+          # NATS credentials from Secret (optional)
+          - name: NATS_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: oracle-nats-secrets
+                key: nats-username
+                optional: true
+          - name: NATS_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: oracle-nats-secrets
+                key: nats-password
+                optional: true
+
+        # Volume mounts
+        volumeMounts:
+          - name: tmp
+            mountPath: /tmp
+          - name: app-logs
+            mountPath: /app/logs
+
+        # Liveness probe (checks if application is alive)
+        livenessProbe:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - ps aux | grep '[p]ython src/main.py' || exit 1
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        # Readiness probe (checks if application is ready)
+        readinessProbe:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - ps aux | grep '[p]ython src/main.py' || exit 1
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        # Lifecycle hooks for graceful shutdown
+        lifecycle:
+          preStop:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  # Send SIGTERM and wait for graceful shutdown
+                  kill -TERM 1
+                  sleep 10
+
+      # Termination grace period (should be > poll_interval)
+      terminationGracePeriodSeconds: 90
+
+      # Volumes
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: app-logs
+          emptyDir: {}
+
+      # Node selector (optional - for specific node pools)
+      # nodeSelector:
+      #   workload: data-processing
+
+      # Tolerations (optional - for tainted nodes)
+      # tolerations:
+      #   - key: "workload"
+      #     operator: "Equal"
+      #     value: "data-processing"
+      #     effect: "NoSchedule"
+
+      # Affinity rules (optional - for pod placement)
+      # affinity:
+      #   podAntiAffinity:
+      #     requiredDuringSchedulingIgnoredDuringExecution:
+      #       - labelSelector:
+      #           matchExpressions:
+      #             - key: app
+      #               operator: In
+      #               values:
+      #                 - oracle-nats-publisher
+      #         topologyKey: kubernetes.io/hostname

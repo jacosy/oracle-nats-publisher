@@ -1,0 +1,207 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oracle-nats-publisher
+  namespace: oracle-nats-publisher
+  labels:
+    app: oracle-nats-publisher
+    version: v1
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: oracle-nats-publisher
+  template:
+    metadata:
+      labels:
+        app: oracle-nats-publisher
+        version: v1
+      annotations:
+        # Vault Agent Injector annotations
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "oracle-nats-publisher"
+        vault.hashicorp.com/agent-pre-populate-only: "true"
+
+        # Oracle DB credentials
+        vault.hashicorp.com/agent-inject-secret-oracle: "secret/data/oracle-nats-publisher/oracle-db"
+        vault.hashicorp.com/agent-inject-template-oracle: |
+          {{- with secret "secret/data/oracle-nats-publisher/oracle-db" -}}
+          export ORACLE_USER="{{ .Data.data.username }}"
+          export ORACLE_PASSWORD="{{ .Data.data.password }}"
+          export ORACLE_HOST="{{ .Data.data.host }}"
+          {{- end -}}
+
+        # MariaDB credentials
+        vault.hashicorp.com/agent-inject-secret-mariadb: "secret/data/oracle-nats-publisher/mariadb"
+        vault.hashicorp.com/agent-inject-template-mariadb: |
+          {{- with secret "secret/data/oracle-nats-publisher/mariadb" -}}
+          export MARIADB_HOST="{{ .Data.data.host }}"
+          export MARIADB_PORT="{{ .Data.data.port }}"
+          export MARIADB_DATABASE="{{ .Data.data.database }}"
+          export MARIADB_USER="{{ .Data.data.username }}"
+          export MARIADB_PASSWORD="{{ .Data.data.password }}"
+          {{- end -}}
+
+        # NATS credentials (optional, if using authentication)
+        vault.hashicorp.com/agent-inject-secret-nats: "secret/data/oracle-nats-publisher/nats"
+        vault.hashicorp.com/agent-inject-template-nats: |
+          {{- with secret "secret/data/oracle-nats-publisher/nats" -}}
+          export NATS_USER="{{ .Data.data.username }}"
+          export NATS_PASSWORD="{{ .Data.data.password }}"
+          {{- end -}}
+    spec:
+      serviceAccountName: oracle-nats-publisher
+
+      # Security Context for the pod
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Init container to source Vault secrets
+      initContainers:
+      - name: vault-init
+        image: busybox:latest
+        command:
+        - sh
+        - -c
+        - |
+          # Wait for Vault Agent to populate secrets
+          while [ ! -f /vault/secrets/oracle ] || [ ! -f /vault/secrets/mariadb ]; do
+            echo "Waiting for Vault secrets..."
+            sleep 2
+          done
+          echo "Vault secrets populated successfully"
+        volumeMounts:
+        - name: vault-secrets
+          mountPath: /vault/secrets
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+
+      containers:
+      - name: oracle-nats-publisher
+        image: oracle-nats-publisher:latest
+        imagePullPolicy: IfNotPresent
+
+        # Security Context for the container
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+
+        # Source Vault secrets as environment variables
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Source all Vault secret files to set environment variables
+          if [ -f /vault/secrets/oracle ]; then
+            . /vault/secrets/oracle
+          fi
+          if [ -f /vault/secrets/mariadb ]; then
+            . /vault/secrets/mariadb
+          fi
+          if [ -f /vault/secrets/nats ]; then
+            . /vault/secrets/nats
+          fi
+          # Start the application
+          exec python src/main.py
+
+        # Environment variables from ConfigMap
+        envFrom:
+        - configMapRef:
+            name: oracle-nats-publisher-config
+
+        # Resource limits
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+        # Liveness probe
+        livenessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - |
+              import sys
+              import os
+              # Simple check to see if the process is running
+              sys.exit(0)
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        # Readiness probe
+        readinessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - |
+              import sys
+              import os
+              # Check if application is ready
+              sys.exit(0)
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        - name: vault-secrets
+          mountPath: /vault/secrets
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+        - name: app-cache
+          mountPath: /home/appuser/.cache
+
+      volumes:
+      - name: config
+        configMap:
+          name: oracle-nats-publisher-config
+          items:
+          - key: config.yaml
+            path: config.yaml
+      - name: vault-secrets
+        emptyDir:
+          medium: Memory
+      - name: tmp
+        emptyDir: {}
+      - name: app-cache
+        emptyDir: {}
+
+      # Restart policy
+      restartPolicy: Always
+
+      # DNS policy
+      dnsPolicy: ClusterFirst
+
+      # Termination grace period
+      terminationGracePeriodSeconds: 30

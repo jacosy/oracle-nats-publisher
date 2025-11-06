@@ -121,3 +121,38 @@ Key config sections in `config/config.yaml`:
 ## Utilities
 
 - `utils/utils.py`: Contains `parse_datetime()` and `format_datetime()` helpers used throughout the codebase for consistent datetime handling
+- `utils/retry_utils.py`: Robust retry mechanisms with exponential backoff for all db_clients
+  - `RetryConfig`: Configuration class for retry behavior (max_retries, backoff settings)
+  - `retry_sync()`: Decorator for synchronous functions (Oracle/MariaDB queries)
+  - `retry_async()`: Decorator for async functions (NATS operations)
+  - `create_retry_config_from_dict()`: Helper to create RetryConfig from YAML config
+
+## Retry Mechanism
+
+All database clients (Oracle, MariaDB, NATS) now include robust retry logic with configurable exponential backoff:
+
+### Configuration
+Each client's retry behavior is configured in `config.yaml` under `<client>.retry`:
+```yaml
+oracle_db:
+  retry:
+    max_retries: 3              # Maximum retry attempts (0 = no retries)
+    initial_backoff: 1.0        # Initial wait time in seconds before first retry
+    max_backoff: 30.0           # Maximum wait time in seconds between retries
+    backoff_multiplier: 2.0     # Exponential backoff multiplier
+```
+
+### Retry Behavior
+- **Exponential Backoff**: Wait time doubles with each retry (configurable via `backoff_multiplier`)
+  - 1st retry: 1.0s
+  - 2nd retry: 2.0s
+  - 3rd retry: 4.0s
+  - Capped at `max_backoff` (30s for databases, 10s for NATS)
+- **Automatic Retry**: All CRUD operations retry on transient failures
+- **Logging**: Each retry attempt is logged with detailed context
+- **Graceful Failure**: After exhausting retries, original exception is raised with full context
+
+### Applied To
+- **OracleDbClient**: `execute_query()` operations
+- **MariaDbClient**: `execute_query()` and `execute_update()` operations
+- **NatsClient**: `publish()` single message operations and batch publishing retry logic

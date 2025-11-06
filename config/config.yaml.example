@@ -1,8 +1,8 @@
 # Oracle Database Configuration
 oracle_db:
-  username: "your_username"
-  password: "your_password"
-  dsn: "localhost:1521/ORCL"  # Format: host:port/service_name
+  username: "your_username"  # Set via ORACLE_USER env var
+  password: "your_password"  # Set via ORACLE_PASSWORD env var
+  dsn: "localhost:1521/ORCL"  # Format: host:port/service_name (Set via ORACLE_DSN env var)
   pool_min: 1
   pool_max: 5
   pool_increment: 1
@@ -15,11 +15,12 @@ oracle_db:
 
 # MariaDB Configuration
 mariadb:
-  host: "localhost"
-  port: 3306
-  database: "etl_tracking"
-  username: "your_username"
-  password: "your_password"
+  host: "localhost"  # Set via MARIADB_HOST env var
+  port: 3306  # Set via MARIADB_PORT env var
+  database: "etl_tracking"  # Set via MARIADB_DATABASE env var
+  username: "your_username"  # Set via MARIADB_USER env var
+  password: "your_password"  # Set via MARIADB_PASSWORD env var
+  pool_size: 5
   # Retry configuration for database operations
   retry:
     max_retries: 3              # Maximum retry attempts (0 = no retries)
@@ -30,7 +31,7 @@ mariadb:
 # NATS Connection Configuration
 nats:
   servers:
-    - "nats://localhost:4222"
+    - "nats://localhost:4222"  # Set via NATS_SERVERS env var (comma-separated)
   # Optional authentication
   # username: "nats_user"
   # password: "nats_password"
@@ -52,13 +53,13 @@ intime_txlog_events:
 
 # Publisher Configuration
 publisher:
-  program_name: "M_INTIMECASEAGENT"
-  poll_interval: 60  # seconds
-  batch_size: 100
-  max_records_per_run: 10000
+  program_name: "M_INTIMECASEAGENT"  # Set via PROGRAM_NAME env var
+  poll_interval: 60  # seconds (Set via POLL_INTERVAL env var)
+  batch_size: 100  # Set via BATCH_SIZE env var
+  max_records_per_run: 10000  # Set via MAX_RECORDS_PER_RUN env var
   max_retries: 3  # Maximum retry attempts for failed messages
 
 # Logging Configuration
 logging:
-  level: "INFO"
+  level: "INFO"  # Set via LOG_LEVEL env var (DEBUG, INFO, WARNING, ERROR, CRITICAL)
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

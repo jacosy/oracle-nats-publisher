@@ -1,0 +1,37 @@
+# ConfigMap for Non-Sensitive Configuration
+# Contains application settings that are not secrets
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oracle-nats-config
+  namespace: oracle-nats-publisher
+  labels:
+    app: oracle-nats-publisher
+    component: config
+data:
+  # Oracle Database Configuration (non-sensitive)
+  ORACLE_POOL_MIN: "1"
+  ORACLE_POOL_MAX: "5"
+  ORACLE_POOL_INCREMENT: "1"
+
+  # MariaDB Configuration (non-sensitive)
+  MARIADB_HOST: "mariadb-service.database.svc.cluster.local"
+  MARIADB_PORT: "3306"
+  MARIADB_DATABASE: "etl_tracking"
+
+  # NATS Configuration (non-sensitive)
+  NATS_SERVERS: "nats://nats-service.messaging.svc.cluster.local:4222"
+  NATS_CONNECT_TIMEOUT: "30"
+  NATS_MAX_RECONNECT_ATTEMPTS: "60"
+  NATS_RECONNECT_TIME_WAIT: "2"
+
+  # Publisher Configuration
+  PROGRAM_NAME: "M_INTIMECASEAGENT"
+  POLL_INTERVAL: "60"
+  BATCH_SIZE: "100"
+  MAX_RECORDS_PER_RUN: "10000"
+  MAX_RETRIES: "3"
+
+  # Logging Configuration
+  LOG_LEVEL: "INFO"

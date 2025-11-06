@@ -1,0 +1,155 @@
+# HashiCorp Vault Integration for Secure Credential Management
+# This uses Vault Agent Injector to inject secrets into pods
+#
+# Prerequisites:
+# 1. Vault installed in cluster
+# 2. Vault Agent Injector installed
+# 3. Kubernetes auth method enabled in Vault
+# 4. Secrets stored in Vault
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oracle-nats-publisher-vault
+  namespace: oracle-nats-publisher
+  labels:
+    app: oracle-nats-publisher
+    version: v7.0
+    vault-enabled: "true"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: oracle-nats-publisher
+  template:
+    metadata:
+      labels:
+        app: oracle-nats-publisher
+        version: v7.0
+      annotations:
+        # Vault Agent Injector annotations
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "oracle-nats-publisher"
+        vault.hashicorp.com/agent-inject-status: "update"
+        vault.hashicorp.com/agent-pre-populate-only: "true"
+
+        # Oracle credentials
+        vault.hashicorp.com/agent-inject-secret-oracle-creds: "secret/data/oracle-nats-publisher/oracle"
+        vault.hashicorp.com/agent-inject-template-oracle-creds: |
+          {{- with secret "secret/data/oracle-nats-publisher/oracle" -}}
+          export ORACLE_USER="{{ .Data.data.username }}"
+          export ORACLE_PASSWORD="{{ .Data.data.password }}"
+          export ORACLE_DSN="{{ .Data.data.dsn }}"
+          {{- end }}
+
+        # MariaDB credentials
+        vault.hashicorp.com/agent-inject-secret-mariadb-creds: "secret/data/oracle-nats-publisher/mariadb"
+        vault.hashicorp.com/agent-inject-template-mariadb-creds: |
+          {{- with secret "secret/data/oracle-nats-publisher/mariadb" -}}
+          export MARIADB_USER="{{ .Data.data.username }}"
+          export MARIADB_PASSWORD="{{ .Data.data.password }}"
+          {{- end }}
+
+        # NATS credentials (optional)
+        vault.hashicorp.com/agent-inject-secret-nats-creds: "secret/data/oracle-nats-publisher/nats"
+        vault.hashicorp.com/agent-inject-template-nats-creds: |
+          {{- with secret "secret/data/oracle-nats-publisher/nats" -}}
+          export NATS_USERNAME="{{ .Data.data.username }}"
+          export NATS_PASSWORD="{{ .Data.data.password }}"
+          {{- end }}
+
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      serviceAccountName: oracle-nats-publisher-sa
+
+      containers:
+      - name: publisher
+        image: oracle-nats-publisher:v7.0
+        imagePullPolicy: IfNotPresent
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # Need write for Vault secrets
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+              - ALL
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+        # Source Vault secrets before starting application
+        command:
+          - /bin/sh
+          - -c
+          - |
+            # Source all Vault-injected credentials
+            . /vault/secrets/oracle-creds
+            . /vault/secrets/mariadb-creds
+            . /vault/secrets/nats-creds
+
+            # Start application
+            exec python src/main.py
+
+        # Environment variables from ConfigMap (non-sensitive)
+        envFrom:
+          - configMapRef:
+              name: oracle-nats-config
+
+        volumeMounts:
+          - name: tmp
+            mountPath: /tmp
+          - name: app-logs
+            mountPath: /app/logs
+
+        livenessProbe:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - ps aux | grep '[p]ython src/main.py' || exit 1
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - ps aux | grep '[p]ython src/main.py' || exit 1
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        lifecycle:
+          preStop:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  kill -TERM 1
+                  sleep 10
+
+      terminationGracePeriodSeconds: 90
+
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: app-logs
+          emptyDir: {}

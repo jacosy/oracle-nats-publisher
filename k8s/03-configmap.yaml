@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oracle-nats-publisher-config
+  namespace: oracle-nats-publisher
+data:
+  config.yaml: |
+    # Oracle Database Configuration
+    oracle_db:
+      host: "${ORACLE_HOST:-localhost}"
+      port: 1521
+      service_name: "${ORACLE_SERVICE_NAME:-ORCL}"
+      username: "${ORACLE_USER}"
+      password: "${ORACLE_PASSWORD}"
+
+    # MariaDB Configuration
+    mariadb:
+      host: "${MARIADB_HOST:-localhost}"
+      port: ${MARIADB_PORT:-3306}
+      database: "${MARIADB_DATABASE:-etl_tracking}"
+      username: "${MARIADB_USER}"
+      password: "${MARIADB_PASSWORD}"
+
+    # NATS Connection Configuration
+    nats:
+      servers:
+        - "${NATS_SERVERS:-nats://nats:4222}"
+      max_reconnect_attempts: 60
+      reconnect_time_wait: 2
+
+    # IntimeTxLog Events Publishing Configuration
+    intime_txlog_events:
+      stream_name: "${NATS_STREAM_NAME:-TXLOG_STREAM}"
+      subject: "${NATS_SUBJECT:-txlog.events}"
+      add_trace_id: true
+      data_type: "TXLOG"
+
+    # Publisher Configuration
+    publisher:
+      program_name: "${PROGRAM_NAME:-M_INTIMECASEAGENT}"
+      poll_interval: ${POLL_INTERVAL:-60}
+      batch_size: ${BATCH_SIZE:-100}
+      max_records_per_run: ${MAX_RECORDS_PER_RUN:-10000}
+      max_retries: ${MAX_RETRIES:-3}
+
+    # Logging Configuration
+    logging:
+      level: "${LOG_LEVEL:-INFO}"
+      format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+  # Environment-specific settings
+  NATS_SERVERS: "nats://nats.nats-system.svc.cluster.local:4222"
+  NATS_STREAM_NAME: "TXLOG_STREAM"
+  NATS_SUBJECT: "txlog.events"
+  PROGRAM_NAME: "M_INTIMECASEAGENT"
+  POLL_INTERVAL: "60"
+  BATCH_SIZE: "100"
+  MAX_RECORDS_PER_RUN: "10000"
+  MAX_RETRIES: "3"
+  LOG_LEVEL: "INFO"
+  ORACLE_SERVICE_NAME: "ORCL"

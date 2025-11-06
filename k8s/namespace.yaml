@@ -1,0 +1,9 @@
+# Namespace for Oracle NATS Publisher
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: oracle-nats-publisher
+  labels:
+    name: oracle-nats-publisher
+    environment: production

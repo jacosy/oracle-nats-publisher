@@ -1,0 +1,40 @@
+# Kustomize configuration for Oracle NATS Publisher
+# Deploy with: kubectl apply -k k8s/
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: oracle-nats-publisher
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - configmap.yaml
+  - secret.yaml
+  - deployment.yaml
+
+# Common labels applied to all resources
+commonLabels:
+  app: oracle-nats-publisher
+  managed-by: kustomize
+
+# ConfigMap generator (alternative to configmap.yaml)
+# configMapGenerator:
+#   - name: oracle-nats-config
+#     literals:
+#       - POLL_INTERVAL=60
+#       - BATCH_SIZE=100
+#       - LOG_LEVEL=INFO
+
+# Secret generator (alternative to secret.yaml - NOT recommended for production)
+# secretGenerator:
+#   - name: oracle-nats-secrets
+#     literals:
+#       - oracle-username=user
+#       - oracle-password=pass
+
+# Images (for image tag management)
+images:
+  - name: oracle-nats-publisher
+    newName: your-registry/oracle-nats-publisher
+    newTag: v7.0
