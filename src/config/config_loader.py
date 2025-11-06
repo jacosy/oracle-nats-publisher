@@ -56,7 +56,7 @@ class ConfigLoader:
         """Get default configuration"""
         return {
             'oracle_db': {
-                'user': 'oracle_user',
+                'username': 'oracle_user',
                 'password': 'oracle_password',
                 'dsn': 'localhost:1521/ORCL',
                 'pool_min': 1,
@@ -66,7 +66,7 @@ class ConfigLoader:
                 'host': 'localhost',
                 'port': 3306,
                 'database': 'intime',
-                'user': 'mariadb_user',
+                'username': 'mariadb_user',
                 'password': 'mariadb_password',
                 'pool_size': 5
             },

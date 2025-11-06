@@ -6,7 +6,7 @@ Represents a record from the ETL_PRMREC table
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
-from utils import parse_datetime, format_datetime
+from utils.utils import parse_datetime, format_datetime
 
 
 @dataclass

@@ -46,10 +46,11 @@ class PublisherApp:
         mariadb_repo = MariaDbRepository(mariadb_db_client)
 
         # Publishers (TxLog business logic layer)
-        self.txlog_publisher = TxLogEventPublisher(config)
+        txlog_publisher = TxLogEventPublisher(config)
 
         # Layer 3: Business logic service (now includes publishing)
-        self.polling_service = PollingService(oracle_repo, mariadb_repo, self.txlog_publisher)
+        # Service will handle graceful shutdown of all layers
+        self.polling_service = PollingService(oracle_repo, mariadb_repo, txlog_publisher)
 
         # Configuration
         publisher_config = config['publisher']
@@ -72,16 +73,30 @@ class PublisherApp:
         self.running = False
 
     async def initialize(self) -> None:
-        """Initialize application and connect to NATS"""
+        """
+        Initialize application and connect to NATS
+
+        Raises:
+            Exception: If initialization fails (connection timeout, auth failure, etc.)
+        """
         logger.info("Initializing publisher application...")
 
-        # Connect to NATS
-        await self.txlog_publisher.connect()
+        try:
+            # Connect to NATS via service layer (with timeout)
+            connection_timeout = self.config.get('nats', {}).get('connect_timeout', 30)
+            await self.polling_service.txlog_publisher.connect(timeout=connection_timeout)
 
-        # Initialize program tracking
-        self.polling_service.initialize_program(self.program_name)
+            # Initialize program tracking
+            self.polling_service.initialize_program(self.program_name)
 
-        logger.info("Initialization complete")
+            logger.info("Initialization complete")
+
+        except asyncio.TimeoutError:
+            logger.error("Initialization failed: NATS connection timed out")
+            raise
+        except Exception as e:
+            logger.error(f"Initialization failed: {e}", exc_info=True)
+            raise
 
     async def process_one_cycle(self) -> bool:
         """
@@ -111,11 +126,24 @@ class PublisherApp:
             return False
 
     async def run(self) -> None:
-        """Main async run loop"""
+        """
+        Main async run loop
+
+        Handles initialization failure and ensures cleanup even if
+        shutdown signal arrives during initialization.
+        """
         self.running = True
+        initialized = False
 
         try:
+            # Initialize with timeout - if signal arrives during init, it will be handled
             await self.initialize()
+            initialized = True
+
+            # Check if shutdown was requested during initialization
+            if not self.running:
+                logger.warning("Shutdown requested during initialization, exiting...")
+                return
 
             logger.info(f"Starting polling loop with {self.poll_interval}s interval")
 
@@ -141,25 +169,55 @@ class PublisherApp:
                     logger.error(f"Error in main loop: {e}", exc_info=True)
                     await asyncio.sleep(RETRY_SLEEP_SECONDS)
 
+        except Exception as init_error:
+            logger.error(f"Failed to initialize application: {init_error}", exc_info=True)
+            # Don't re-raise - we want to clean up what was partially initialized
+
         finally:
-            await self.cleanup()
+            # Clean up only if something was initialized
+            # If initialization failed early, there may be nothing to clean
+            if initialized or self.polling_service:
+                await self.cleanup()
+            else:
+                logger.info("No resources to clean up (initialization failed early)")
 
     async def cleanup(self) -> None:
-        """Cleanup resources"""
-        logger.info("Cleaning up resources...")
+        """
+        Cleanup resources gracefully through service layer
+
+        Graceful shutdown order:
+        1. Stop accepting new work (self.running = False, already done)
+        2. Wait for current cycle to complete (handled by main loop)
+        3. Close service (which cascades to publisher and repositories)
+
+        This prevents interrupting in-flight operations and ensures:
+        - NATS messages are fully published
+        - Database transactions are completed
+        - Connections are properly closed
+        """
+        logger.info("Starting graceful shutdown...")
+
         try:
-            await self.txlog_publisher.close()
-            logger.info("NATS publisher closed successfully")
+            # Close service layer - it will cascade to all underlying layers
+            await self.polling_service.close()
+            logger.info("All resources closed successfully")
         except Exception as e:
-            logger.error(f"Error during cleanup: {e}", exc_info=True)
-        logger.info("Cleanup completed")
+            logger.error(f"Error during graceful shutdown: {e}", exc_info=True)
+
+        logger.info("Graceful shutdown completed")
 
 
 def setup_logging(config: Dict[str, Any]) -> None:
     """Setup logging configuration"""
     log_config = config.get('logging', {})
-    log_level = log_config.get('level', 'INFO')
+    log_level = log_config.get('level', 'INFO').upper()
     log_format = log_config.get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    # Validate log level
+    valid_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+    if log_level not in valid_levels:
+        print(f"Warning: Invalid log level '{log_level}', defaulting to INFO")
+        log_level = 'INFO'
 
     logging.basicConfig(
         level=getattr(logging, log_level),

@@ -8,7 +8,7 @@ import uuid
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from db_clients.nats_client import NatsClient
-from utils import format_datetime
+from utils.utils import format_datetime
 
 logger = logging.getLogger(__name__)
 

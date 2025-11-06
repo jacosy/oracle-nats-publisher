@@ -17,15 +17,24 @@ class MariaDbRepository:
     Repository for MariaDB ETL tracking
     Contains business-specific queries for ETL_PRMREC table
     """
-    
+
     def __init__(self, db_client: MariaDbClient):
         """
         Initialize repository
-        
+
         Args:
             db_client: Pure CRUD database client
         """
         self.db_client = db_client
+
+    def close(self) -> None:
+        """
+        Close repository and underlying database connection
+        Ensures graceful shutdown of MariaDB connections
+        """
+        logger.info("Closing MariaDB repository")
+        if self.db_client:
+            self.db_client.close()
     
     def get_program_record(self, program_name: str) -> Optional[EtlProgramRecord]:
         """

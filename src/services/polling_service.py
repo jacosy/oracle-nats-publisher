@@ -141,13 +141,13 @@ class PollingService:
     ) -> List[Dict[str, Any]]:
         """
         Fetch events by specific criteria (for ad-hoc queries)
-        
+
         Args:
             event_type: Filter by event type
             case_id: Filter by case ID
             since: Filter by time
             limit: Maximum records
-            
+
         Returns:
             List of matching events
         """
@@ -157,3 +157,39 @@ class PollingService:
             return self.oracle_repo.get_events_by_type(event_type, since, limit)
         else:
             return self.oracle_repo.get_txlog_events_since(since, limit)
+
+    async def close(self) -> None:
+        """
+        Close service and all underlying connections gracefully
+
+        This method ensures proper shutdown order:
+        1. Stop accepting new work (handled by main.py setting running=False)
+        2. Wait for current operations to complete (handled by async await in main loop)
+        3. Close publisher (NATS connection)
+        4. Close repositories (database connections)
+
+        This prevents interrupting in-flight operations.
+        """
+        logger.info("Closing Polling Service gracefully...")
+
+        # Close publisher first (may have pending async operations)
+        try:
+            await self.txlog_publisher.close()
+            logger.info("Publisher closed successfully")
+        except Exception as e:
+            logger.error(f"Error closing publisher: {e}", exc_info=True)
+
+        # Close repositories (will close underlying db clients)
+        try:
+            self.oracle_repo.close()
+            logger.info("Oracle repository closed successfully")
+        except Exception as e:
+            logger.error(f"Error closing Oracle repository: {e}", exc_info=True)
+
+        try:
+            self.mariadb_repo.close()
+            logger.info("MariaDB repository closed successfully")
+        except Exception as e:
+            logger.error(f"Error closing MariaDB repository: {e}", exc_info=True)
+
+        logger.info("Polling Service closed")

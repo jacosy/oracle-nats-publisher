@@ -11,10 +11,11 @@ import nats
 from nats.aio.client import Client as NATSClient
 from nats.js import JetStreamContext
 from nats.js.api import StreamConfig
+from utils.retry_utils import retry_async, create_retry_config_from_dict, RetryConfig
 
 logger = logging.getLogger(__name__)
 
-# Constants
+# Legacy constant (keeping for backwards compatibility)
 MAX_BACKOFF_SECONDS = 10  # Maximum wait time between retries
 
 
@@ -22,7 +23,7 @@ class NatsClient:
     """
     NATS Client
     Handles low-level NATS connection and JetStream operations
-    Similar to OracleDbClient and MariaDbClient - pure CRUD operations
+    Similar to OracleDbClient and MariaDbClient - pure CRUD operations with retry support
     """
 
     def __init__(self, config: Dict[str, Any]):
@@ -36,11 +37,19 @@ class NatsClient:
                 - password: Optional password
                 - max_reconnect_attempts: Max reconnection attempts
                 - reconnect_time_wait: Wait time between reconnections
+                - retry: Retry configuration (optional)
         """
         self.config = config
         self.servers = config.get('servers', ['nats://localhost:4222'])
         self.username = config.get('username')
         self.password = config.get('password')
+
+        # Initialize retry configuration
+        retry_config = config.get('retry', {})
+        self.retry_config = create_retry_config_from_dict(retry_config)
+        logger.info(f"NATS retry config: max_retries={self.retry_config.max_retries}, "
+                   f"initial_backoff={self.retry_config.initial_backoff}s, "
+                   f"max_backoff={self.retry_config.max_backoff}s")
 
         self.nc: Optional[NATSClient] = None
         self.js: Optional[JetStreamContext] = None
@@ -48,11 +57,15 @@ class NatsClient:
 
         logger.info(f"NATS Client initialized for {self.servers}")
     
-    async def connect(self) -> None:
+    async def connect(self, timeout: int = 30) -> None:
         """
-        Connect to NATS server and initialize JetStream
+        Connect to NATS server and initialize JetStream with timeout
+
+        Args:
+            timeout: Connection timeout in seconds (default: 30)
 
         Raises:
+            asyncio.TimeoutError: If connection takes longer than timeout
             Exception: If connection fails
         """
         try:
@@ -60,7 +73,8 @@ class NatsClient:
             connect_opts = {
                 'servers': self.servers,
                 'max_reconnect_attempts': self.config.get('max_reconnect_attempts', 60),
-                'reconnect_time_wait': self.config.get('reconnect_time_wait', 2)
+                'reconnect_time_wait': self.config.get('reconnect_time_wait', 2),
+                'connect_timeout': timeout  # NATS library connection timeout
             }
 
             # Add authentication if provided
@@ -68,8 +82,13 @@ class NatsClient:
                 connect_opts['user'] = self.username
                 connect_opts['password'] = self.password
 
-            # Connect to NATS (async)
-            self.nc = await nats.connect(**connect_opts)
+            logger.info(f"Connecting to NATS at {self.servers} (timeout: {timeout}s)...")
+
+            # Connect to NATS with overall timeout wrapper
+            self.nc = await asyncio.wait_for(
+                nats.connect(**connect_opts),
+                timeout=timeout
+            )
 
             logger.info(f"Connected to NATS at {self.servers}")
 
@@ -77,10 +96,15 @@ class NatsClient:
             self.js = self.nc.jetstream()
 
             self.is_connected = True
-            logger.info("JetStream initialized")
+            logger.info("JetStream initialized successfully")
 
+        except asyncio.TimeoutError:
+            logger.error(f"NATS connection timed out after {timeout} seconds")
+            self.is_connected = False
+            raise
         except Exception as e:
             logger.error(f"Failed to connect to NATS: {e}", exc_info=True)
+            self.is_connected = False
             raise
     
     async def ensure_stream(self, stream_name: str, subjects: List[str]) -> None:
@@ -114,7 +138,7 @@ class NatsClient:
     
     async def publish(self, subject: str, message: Dict[str, Any]) -> bool:
         """
-        Publish single message to NATS JetStream
+        Publish single message to NATS JetStream with automatic retry
 
         Args:
             subject: Subject to publish to
@@ -124,24 +148,30 @@ class NatsClient:
             True if successful, False otherwise
         """
         try:
-            if not self.is_connected or not self.js:
-                raise RuntimeError("Not connected to NATS JetStream")
-
-            # Convert message to JSON
-            payload = json.dumps(message, default=str).encode('utf-8')
-
-            # Publish to JetStream
-            ack = await self.js.publish(subject, payload)
-
-            logger.debug(f"Published to {subject}, seq: {ack.seq}")
+            # Create retry decorator dynamically based on instance config
+            retry_decorator = retry_async(self.retry_config)
+            await retry_decorator(self._publish_internal)(subject, message)
             return True
 
         except Exception as e:
-            logger.error(f"Failed to publish to {subject}: {e}", exc_info=True)
+            logger.error(f"Failed to publish to {subject} after all retries: {e}", exc_info=True)
             return False
+
+    async def _publish_internal(self, subject: str, message: Dict[str, Any]) -> None:
+        """Internal implementation of publish (wrapped by retry logic)"""
+        if not self.is_connected or not self.js:
+            raise RuntimeError("Not connected to NATS JetStream")
+
+        # Convert message to JSON
+        payload = json.dumps(message, default=str).encode('utf-8')
+
+        # Publish to JetStream
+        ack = await self.js.publish(subject, payload)
+
+        logger.debug(f"Published to {subject}, seq: {ack.seq}")
     
     async def publish_batch(self, subject: str, messages: List[Dict[str, Any]],
-                           batch_size: int = 100, max_retries: int = 3) -> int:
+                           batch_size: int = 100, max_retries: Optional[int] = None) -> int:
         """
         Publish batch of messages to NATS JetStream with TRUE async batch publishing
 
@@ -152,11 +182,28 @@ class NatsClient:
             subject: Subject to publish to
             messages: List of message dictionaries
             batch_size: Number of messages to publish concurrently per batch (default: 100)
-            max_retries: Maximum retry attempts for failed messages (default: 3)
+            max_retries: Maximum retry attempts for failed messages (default: use instance config)
 
         Returns:
             Number of successfully published messages
+
+        Raises:
+            ValueError: If validation fails
+            RuntimeError: If not connected to NATS
         """
+        # Use instance retry config if max_retries not specified
+        if max_retries is None:
+            max_retries = self.retry_config.max_retries
+        # Input validation
+        if not subject or not isinstance(subject, str):
+            raise ValueError("Subject must be a non-empty string")
+
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
+
+        if max_retries < 0:
+            raise ValueError(f"max_retries must be non-negative, got {max_retries}")
+
         if not messages:
             logger.warning("No messages to publish")
             return 0
@@ -279,10 +326,10 @@ class NatsClient:
 
             retry_queue = next_retry_queue
 
-            # Wait before retry with exponential backoff
+            # Wait before retry with exponential backoff using instance config
             if retry_queue and attempt_num < max_retries:
-                wait_time = min(2 ** attempt, MAX_BACKOFF_SECONDS)
-                logger.info(f"Waiting {wait_time}s before retry attempt {attempt_num + 1}...")
+                wait_time = self.retry_config.calculate_backoff(attempt)
+                logger.info(f"Waiting {wait_time:.2f}s before retry attempt {attempt_num + 1}...")
                 await asyncio.sleep(wait_time)
 
         return published_count, failed_messages
@@ -309,13 +356,39 @@ class NatsClient:
     
     async def close(self) -> None:
         """
-        Close NATS connection
+        Close NATS connection gracefully
+
+        Handles race conditions:
+        - Connection in-progress
+        - No connection established
+        - Already closed
         """
         try:
-            if self.nc is not None and self.is_connected:
+            # If no connection object, nothing to close
+            if self.nc is None:
+                logger.info("NATS connection not established, nothing to close")
+                return
+
+            # If connected, drain and close gracefully
+            if self.is_connected:
+                logger.info("Draining NATS connection (waiting for pending messages)...")
                 await self.nc.drain()
                 await self.nc.close()
                 self.is_connected = False
+                logger.info("NATS connection closed gracefully")
+            else:
+                # Connection object exists but not fully connected
+                # Try to close anyway (may be in connecting state)
+                logger.warning("NATS connection exists but not marked as connected, attempting close...")
+                try:
+                    await self.nc.close()
+                except Exception as close_err:
+                    logger.debug(f"Error closing non-connected NATS: {close_err}")
                 logger.info("NATS connection closed")
+
         except Exception as e:
-            logger.error(f"Error closing NATS connection: {e}")
+            logger.error(f"Error closing NATS connection: {e}", exc_info=True)
+        finally:
+            # Ensure state is reset
+            self.is_connected = False
+            self.js = None
